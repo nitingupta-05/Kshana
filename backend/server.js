@@ -35,6 +35,10 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Force Google DNS to bypass broken system DNS resolvers
+const dns = require("dns");
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))

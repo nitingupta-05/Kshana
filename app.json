@@ -20,8 +20,8 @@
     },
     "androidStatusBar": {
       "translucent": false,
-      "backgroundColor": "#FFF7ED",
-      "barStyle": "dark-content"
+      "backgroundColor": "#232323",
+      "barStyle": "light-content"
     },
     "web": {
       "output": "static",
