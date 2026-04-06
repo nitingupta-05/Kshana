@@ -1,7 +1,7 @@
 import { emitAuthRequired } from '@/utils/auth-events';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const DEFAULT_API_BASE_URL = 'http://10.184.118.122:5001/api';
+const DEFAULT_API_BASE_URL = 'https://kshana.onrender.com/api';
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? DEFAULT_API_BASE_URL;
 export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '');

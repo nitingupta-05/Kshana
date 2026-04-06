@@ -1081,7 +1081,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://0.0.0.0:${PORT}`);
 
   // Keep-alive ping — prevents Render free tier cold starts
-  // Pings /healthz every 14 minutes so the server never sleeps
+  // Pings /healthz every 10 minutes so the server never sleeps
   if (process.env.RENDER_EXTERNAL_URL) {
     const url = `${process.env.RENDER_EXTERNAL_URL}/healthz`;
     setInterval(async () => {
@@ -1091,6 +1091,6 @@ server.listen(PORT, "0.0.0.0", () => {
       } catch (e) {
         console.error("Keep-alive ping failed:", e.message);
       }
-    }, 14 * 60 * 1000); // every 14 minutes
+    }, 10 * 60 * 1000); // every 10 minutes
   }
 });
