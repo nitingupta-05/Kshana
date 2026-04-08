@@ -1512,17 +1512,31 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://0.0.0.0:${PORT}`);
 
   // Keep-alive ping — prevents Render free tier cold starts
-  // Pings /healthz every 10 minutes so the server never sleeps
-  if (process.env.RENDER_EXTERNAL_URL) {
-    const url = `${process.env.RENDER_EXTERNAL_URL}/healthz`;
+  // Pings /api/warmup every 5 minutes to keep both server and DB connection active
+  const renderUrl = process.env.RENDER_EXTERNAL_URL || (process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : null);
+  
+  if (renderUrl) {
+    const url = `${renderUrl.replace(/\/+$/, "")}/api/warmup`;
+    console.log(`Self-ping (warm-start) configured for: ${url}`);
+    
+    // Initial ping after 30s to ensure everything is ready
+    setTimeout(() => {
+      fetch(url).catch(e => console.error("Initial warm-up ping failed:", e.message));
+    }, 30000);
+
+    // Regular interval every 5 minutes
     setInterval(async () => {
       try {
-        await fetch(url);
-        console.log("Keep-alive ping sent");
+        const start = Date.now();
+        const res = await fetch(url);
+        const duration = Date.now() - start;
+        console.log(`[keep-alive] Ping sent to ${url}. Status: ${res.status} (${duration}ms)`);
       } catch (e) {
-        console.error("Keep-alive ping failed:", e.message);
+        console.error("[keep-alive] Ping failed:", e.message);
       }
-    }, 10 * 60 * 1000); // every 10 minutes
+    }, 5 * 60 * 1000); 
+  } else {
+    console.log("Self-ping skipped: RENDER_EXTERNAL_URL or RENDER_EXTERNAL_HOSTNAME not found.");
   }
 
 });
