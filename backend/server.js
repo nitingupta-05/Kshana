@@ -1511,29 +1511,18 @@ app.delete("/admin/users/:id", verifyAdmin, async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://0.0.0.0:${PORT}`);
 
-  const explicitUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
-  const renderHost = (process.env.RENDER_EXTERNAL_HOSTNAME || "").trim();
-  const baseUrl = explicitUrl
-    ? explicitUrl.replace(/\/+$/, "")
-    : (renderHost ? `https://${renderHost}` : "");
-  const pingUrl = baseUrl ? `${baseUrl}/api/ping` : "";
-  const intervalMs = Math.max(60_000, Number(process.env.SELF_PING_INTERVAL_MS || 240_000));
-  const enableSelfPing = process.env.ENABLE_SELF_PING
-    ? String(process.env.ENABLE_SELF_PING).toLowerCase() === "true"
-    : Boolean(pingUrl);
-
-  // Render keep-warm ping (optional)
-  if (enableSelfPing && pingUrl) {
-    console.log(`Self-ping enabled -> ${pingUrl} every ${Math.round(intervalMs / 60000)} min`);
+  // Keep-alive ping — prevents Render free tier cold starts
+  // Pings /healthz every 10 minutes so the server never sleeps
+  if (process.env.RENDER_EXTERNAL_URL) {
+    const url = `${process.env.RENDER_EXTERNAL_URL}/healthz`;
     setInterval(async () => {
       try {
-        const res = await fetch(pingUrl);
-        console.log(`[keep-alive] ${new Date().toISOString()} -> ${res.status}`);
+        await fetch(url);
+        console.log("Keep-alive ping sent");
       } catch (e) {
-        console.warn(`[keep-alive] ping failed: ${e.message}`);
+        console.error("Keep-alive ping failed:", e.message);
       }
-    }, intervalMs);
-  } else {
-    console.log("Self-ping skipped (not running on Render)");
+    }, 10 * 60 * 1000); // every 10 minutes
   }
+
 });

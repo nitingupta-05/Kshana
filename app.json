@@ -55,8 +55,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "6c904208-232d-41b8-9607-1307ce10df3f"
+        "projectId": "9d853d06-7adf-42f7-b976-f91bdd972f8c"
       }
-    }
+    },
+    "owner": "nsg_gupta"
   }
 }

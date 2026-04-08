@@ -1,33 +1,20 @@
 import { emitAuthRequired } from '@/utils/auth-events';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
 
 const normalizeApiBase = (raw: string) => {
   const trimmed = raw.replace(/\/+$/, '');
   return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
 };
 
-const normalizeOrigin = (raw: string) =>
-  raw.replace(/\/+$/, '').replace(/\/api$/, '');
-
-const PRIMARY_API_INPUT =
-  process.env.EXPO_PUBLIC_API_URL?.trim() ||
+const RENDER_API_ORIGIN =
   process.env.EXPO_PUBLIC_API_ORIGIN?.trim() ||
-  'http://10.107.154.122:5001';
+  process.env.EXPO_PUBLIC_API_URL?.trim() ||
+  'https://kshana.onrender.com';
 
-const FALLBACK_ORIGINS = Platform.select({
-  android: ['http://10.0.2.2:5001', 'http://127.0.0.1:5001', 'http://localhost:5001'],
-  default: ['http://localhost:5001', 'http://127.0.0.1:5001', 'http://10.0.2.2:5001'],
-}) as string[];
-
-const API_ORIGINS = Array.from(
-  new Set([normalizeOrigin(PRIMARY_API_INPUT), ...FALLBACK_ORIGINS.map(normalizeOrigin)])
-);
-
-export const API_ORIGIN = API_ORIGINS[0];
+export const API_ORIGIN = RENDER_API_ORIGIN.replace(/\/+$/, '').replace(/\/api$/, '');
 export const API_BASE_URL = normalizeApiBase(API_ORIGIN);
 export const getApiOrigin = () => API_ORIGIN;
-export const getApiOrigins = () => [...API_ORIGINS];
+export const getApiOrigins = () => [API_ORIGIN];
 
 const API_LOG_THROTTLE_MS = 5000;
 let lastApiLogAt = 0;
@@ -54,33 +41,6 @@ const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: nu
   } finally {
     if (timer) clearTimeout(timer);
   }
-};
-
-const buildCandidateUrls = (url: string): string[] => {
-  try {
-    const parsed = new URL(url);
-    const path = `${parsed.pathname}${parsed.search}`;
-    if (!parsed.pathname.startsWith('/api')) return [url];
-
-    const candidates = API_ORIGINS.map((origin) => `${origin}${path}`);
-    if (!candidates.includes(url)) candidates.unshift(url);
-    return Array.from(new Set(candidates));
-  } catch {
-    return [url];
-  }
-};
-
-const shouldTryNextOrigin = (message: string) => {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes('network request failed') ||
-    lower.includes('failed to fetch') ||
-    lower.includes('request timed out') ||
-    lower.includes('socket') ||
-    lower.includes('backend is sleeping') ||
-    lower.includes('server is unavailable') ||
-    lower.includes('unexpected server response')
-  );
 };
 
 export const API_ENDPOINTS = {
@@ -129,80 +89,56 @@ export const apiCall = async (
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const requestUrls = buildCandidateUrls(url);
-  let lastError = 'Network error';
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      },
+      15000
+    );
 
-  for (let index = 0; index < requestUrls.length; index += 1) {
-    const requestUrl = requestUrls[index];
-    const hasFallback = index < requestUrls.length - 1;
+    const contentType = response.headers.get('content-type') || '';
+    let data: any = null;
 
-    try {
-      const response = await fetchWithTimeout(
-        requestUrl,
-        {
-          method,
-          headers,
-          body: body ? JSON.stringify(body) : undefined,
-        },
-        12000
-      );
-
-      const contentType = response.headers.get('content-type') || '';
-      let data: any = null;
-
-      if (contentType.includes('application/json')) {
-        try {
-          data = await response.json();
-        } catch {
-          throw new Error('Server error - invalid JSON response');
-        }
-      } else {
-        const text = await response.text();
-        const lower = text.toLowerCase();
-        const nonJsonDetail = `${response.status} ${text.slice(0, 200)}`;
-
-        if ((response.status === 404 || response.status === 521 || response.status >= 500) && hasFallback) {
-          continue;
-        }
-
-        if (response.status === 521 || lower.includes('error code: 521')) {
-          throw new Error('Backend is sleeping or unreachable. Please try again in a minute.');
-        }
-
-        if (response.status >= 500) {
-          throw new Error('Server is unavailable. Please try again.');
-        }
-
-        logApiError('Non-JSON response:', `${nonJsonDetail} @ ${requestUrl}`);
-        throw new Error('Unexpected server response.');
+    if (contentType.includes('application/json')) {
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error('Server error - invalid JSON response');
       }
+    } else {
+      const text = await response.text();
+      const lower = text.toLowerCase();
+      const nonJsonDetail = `${response.status} ${text.slice(0, 200)}`;
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          await removeToken();
-          emitAuthRequired();
-          throw new Error('Session expired. Please login again.');
-        }
-        if (response.status === 404 && hasFallback) {
-          continue;
-        }
-        throw new Error(data?.msg || data?.message || `Request failed (${response.status})`);
+      if (response.status === 521 || lower.includes('error code: 521')) {
+        throw new Error('Backend is waking up. Please try again in a few seconds.');
       }
-
-      return data;
-    } catch (error: any) {
-      const msg = error?.message || 'Network error';
-      lastError = msg;
-      if (hasFallback && shouldTryNextOrigin(msg)) {
-        continue;
+      if (response.status >= 500) {
+        throw new Error('Server is unavailable. Please try again.');
       }
-      logApiError('API Error:', `${msg} @ ${requestUrl}`);
-      throw new Error(msg);
+      logApiError('Non-JSON response:', `${nonJsonDetail} @ ${url}`);
+      throw new Error('Unexpected server response.');
     }
-  }
 
-  logApiError('API Error:', lastError);
-  throw new Error(lastError);
+    if (!response.ok) {
+      if (response.status === 401) {
+        await removeToken();
+        emitAuthRequired();
+        throw new Error('Session expired. Please login again.');
+      }
+      throw new Error(data?.msg || data?.message || `Request failed (${response.status})`);
+    }
+
+    return data;
+  } catch (error: any) {
+    const msg = error?.message || 'Network error';
+    logApiError('API Error:', `${msg} @ ${url}`);
+    throw new Error(msg);
+  }
 };
 
 // ================= TOKEN MANAGEMENT =================
@@ -385,6 +321,20 @@ export const getUnreadConversationCounts = async () => {
 
 export const markConversationRead = async (conversationId: string) => {
   return await apiCall(`${API_BASE_URL}/conversations/${conversationId}/read`, 'POST', undefined, true);
+};
+
+// ================= WARMUP =================
+
+export const warmupBackend = async (timeoutMs: number = 6000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await fetch(`${API_BASE_URL}/warmup`, { method: 'GET', signal: controller.signal });
+  } catch {
+    // ignore warmup errors; backend may be cold or offline
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 export const setDisappearTimer = async (conversationId: string, seconds: number) => {
