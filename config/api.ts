@@ -1,10 +1,87 @@
 import { emitAuthRequired } from '@/utils/auth-events';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
-const DEFAULT_API_BASE_URL = 'http://10.107.154.122:5001/api';
+const normalizeApiBase = (raw: string) => {
+  const trimmed = raw.replace(/\/+$/, '');
+  return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+};
 
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? DEFAULT_API_BASE_URL;
-export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '');
+const normalizeOrigin = (raw: string) =>
+  raw.replace(/\/+$/, '').replace(/\/api$/, '');
+
+const PRIMARY_API_INPUT =
+  process.env.EXPO_PUBLIC_API_URL?.trim() ||
+  process.env.EXPO_PUBLIC_API_ORIGIN?.trim() ||
+  'http://10.107.154.122:5001';
+
+const FALLBACK_ORIGINS = Platform.select({
+  android: ['http://10.0.2.2:5001', 'http://127.0.0.1:5001', 'http://localhost:5001'],
+  default: ['http://localhost:5001', 'http://127.0.0.1:5001', 'http://10.0.2.2:5001'],
+}) as string[];
+
+const API_ORIGINS = Array.from(
+  new Set([normalizeOrigin(PRIMARY_API_INPUT), ...FALLBACK_ORIGINS.map(normalizeOrigin)])
+);
+
+export const API_ORIGIN = API_ORIGINS[0];
+export const API_BASE_URL = normalizeApiBase(API_ORIGIN);
+export const getApiOrigin = () => API_ORIGIN;
+export const getApiOrigins = () => [...API_ORIGINS];
+
+const API_LOG_THROTTLE_MS = 5000;
+let lastApiLogAt = 0;
+
+const logApiError = (label: string, detail?: string) => {
+  const now = Date.now();
+  if (now - lastApiLogAt < API_LOG_THROTTLE_MS) return;
+  lastApiLogAt = now;
+  if (detail) {
+    console.warn(label, detail);
+  } else {
+    console.warn(label);
+  }
+};
+
+const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number) => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Request timed out. Please try again.')), timeoutMs);
+  });
+  try {
+    const response = await Promise.race([fetch(url, options), timeoutPromise]) as Response;
+    return response;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const buildCandidateUrls = (url: string): string[] => {
+  try {
+    const parsed = new URL(url);
+    const path = `${parsed.pathname}${parsed.search}`;
+    if (!parsed.pathname.startsWith('/api')) return [url];
+
+    const candidates = API_ORIGINS.map((origin) => `${origin}${path}`);
+    if (!candidates.includes(url)) candidates.unshift(url);
+    return Array.from(new Set(candidates));
+  } catch {
+    return [url];
+  }
+};
+
+const shouldTryNextOrigin = (message: string) => {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('network request failed') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('request timed out') ||
+    lower.includes('socket') ||
+    lower.includes('backend is sleeping') ||
+    lower.includes('server is unavailable') ||
+    lower.includes('unexpected server response')
+  );
+};
 
 export const API_ENDPOINTS = {
   LOGIN: `${API_BASE_URL}/auth/login`,
@@ -37,56 +114,95 @@ export const apiCall = async (
   method: string,
   body?: any,
   requiresAuth: boolean = false
-) => {
-  try {
-    const headers: any = {
-      'Content-Type': 'application/json',
-    };
+): Promise<any> => {
+  const headers: any = {
+    'Content-Type': 'application/json',
+  };
 
-    if (requiresAuth) {
-      const token = await AsyncStorage.getItem('authToken');
-      if (!token) {
-        await removeToken();
-        emitAuthRequired();
-        throw new Error('Session expired. Please login again.');
-      }
-      headers.Authorization = `Bearer ${token}`;
+  if (requiresAuth) {
+    const token = await AsyncStorage.getItem('authToken');
+    if (!token) {
+      await removeToken();
+      emitAuthRequired();
+      throw new Error('Session expired. Please login again.');
     }
-
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error('Non-JSON response:', text);
-      throw new Error('Server error - backend not responding correctly');
-    }
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        await removeToken();
-        emitAuthRequired();
-        throw new Error('Session expired. Please login again.');
-      }
-      throw new Error(data.msg || 'Request failed');
-    }
-
-    return data;
-  } catch (error: any) {
-    console.error('API Error:', error.message);
-
-    if (error.message?.includes('JSON')) {
-      throw new Error('Server error - please restart backend');
-    }
-
-    throw new Error(error.message || 'Network error');
+    headers.Authorization = `Bearer ${token}`;
   }
+
+  const requestUrls = buildCandidateUrls(url);
+  let lastError = 'Network error';
+
+  for (let index = 0; index < requestUrls.length; index += 1) {
+    const requestUrl = requestUrls[index];
+    const hasFallback = index < requestUrls.length - 1;
+
+    try {
+      const response = await fetchWithTimeout(
+        requestUrl,
+        {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+        },
+        12000
+      );
+
+      const contentType = response.headers.get('content-type') || '';
+      let data: any = null;
+
+      if (contentType.includes('application/json')) {
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error('Server error - invalid JSON response');
+        }
+      } else {
+        const text = await response.text();
+        const lower = text.toLowerCase();
+        const nonJsonDetail = `${response.status} ${text.slice(0, 200)}`;
+
+        if ((response.status === 404 || response.status === 521 || response.status >= 500) && hasFallback) {
+          continue;
+        }
+
+        if (response.status === 521 || lower.includes('error code: 521')) {
+          throw new Error('Backend is sleeping or unreachable. Please try again in a minute.');
+        }
+
+        if (response.status >= 500) {
+          throw new Error('Server is unavailable. Please try again.');
+        }
+
+        logApiError('Non-JSON response:', `${nonJsonDetail} @ ${requestUrl}`);
+        throw new Error('Unexpected server response.');
+      }
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          await removeToken();
+          emitAuthRequired();
+          throw new Error('Session expired. Please login again.');
+        }
+        if (response.status === 404 && hasFallback) {
+          continue;
+        }
+        throw new Error(data?.msg || data?.message || `Request failed (${response.status})`);
+      }
+
+      return data;
+    } catch (error: any) {
+      const msg = error?.message || 'Network error';
+      lastError = msg;
+      if (hasFallback && shouldTryNextOrigin(msg)) {
+        continue;
+      }
+      logApiError('API Error:', `${msg} @ ${requestUrl}`);
+      throw new Error(msg);
+    }
+  }
+
+  logApiError('API Error:', lastError);
+  throw new Error(lastError);
 };
 
 // ================= TOKEN MANAGEMENT =================
@@ -291,7 +407,7 @@ export const listStories = async () => {
   return await apiCall(`${API_BASE_URL}/stories`, 'GET', undefined, true);
 };
 
-export const postStory = async (payload: { text?: string; image?: string; bgColor?: string }) => {
+export const postStory = async (payload: { text?: string; image?: string; bgColor?: string; textColor?: string }) => {
   return await apiCall(`${API_BASE_URL}/stories`, 'POST', payload, true);
 };
 

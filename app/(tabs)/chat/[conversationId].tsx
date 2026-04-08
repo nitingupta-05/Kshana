@@ -53,8 +53,8 @@ const buildItems = (msgs: PublicMessage[]): Item[] => {
   return out.reverse();
 };
 
-function Ticks({ status, color, subtext }: { status: 'sent' | 'delivered' | 'read'; color: string; subtext: string }) {
-  const c = status === 'read' ? color : subtext;
+function Ticks({ status, readColor, mutedColor }: { status: 'sent' | 'delivered' | 'read'; readColor: string; mutedColor: string }) {
+  const c = status === 'read' ? readColor : mutedColor;
   return (
     <View style={tS.wrap}>
       <Ionicons name="checkmark" size={14} color={c} />
@@ -340,7 +340,7 @@ export default function ChatScreen() {
               </View>
             )}
             <View style={styles.meta}>
-              {isMine && status && <Ticks status={status} color={myBubbleBg} subtext={colors.subtext} />}
+              {isMine && status && <Ticks status={status} readColor={colors.primary} mutedColor={colors.subtext} />}
               <Text style={[styles.timeText, { color: colors.subtext }]}>{item.createdAt ? formatTime(item.createdAt) : ''}</Text>
             </View>
           </View>

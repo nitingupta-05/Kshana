@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, FlatList, Image, Modal, Pressable,
-  StyleSheet, Text, TouchableOpacity, View,
+  Platform, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
 
 import { FabMenu } from '@/components/FabMenu';
@@ -38,7 +38,7 @@ export default function ChatsScreen() {
   const colors = useThemeColor();
   const router = useRouter();
   const {
-    online, unreadByConversation, conversations, refreshConversations,
+    online, unreadByConversation, unreadPreviewByConversation, conversations, refreshConversations,
     storyAuthors, viewedStoryAuthors, markStoryAuthorViewed, moods,
   } = useRealtime();
 
@@ -87,6 +87,10 @@ export default function ChatsScreen() {
       const other = item.participants.find((p) => p.id !== me?.id) ?? item.participants[0];
       const unread = unreadByConversation[item.id] || 0;
       const hasUnread = unread > 0;
+      const unreadPreview = unreadPreviewByConversation[item.id];
+      const previewText = hasUnread && unreadPreview
+        ? unreadPreview
+        : (item.lastMessage?.text || 'Tap to start chatting');
       const hasStory = other ? storyAuthors.has(other.id) : false;
       const storyViewed = other ? viewedStoryAuthors.has(other.id) : false;
 
@@ -125,9 +129,9 @@ export default function ChatsScreen() {
               </View>
             )}
             {/* Mood indicator floating bubble */}
-            {other && (moods[other.id] || other?.mood) && (
+            {other && (moods[other.id] ?? other?.mood) && (
               <View style={styles.moodBubble}>
-                <Text style={styles.moodEmoji}>{(moods[other.id] || other?.mood || '').split(' ')[0]}</Text>
+                <Text style={styles.moodEmoji}>{((moods[other.id] ?? other?.mood) || '').split(' ')[0]}</Text>
               </View>
             )}
           </TouchableOpacity>
@@ -138,7 +142,7 @@ export default function ChatsScreen() {
               style={[styles.subtitle, { color: hasUnread ? colors.primary : colors.subtext, fontWeight: hasUnread ? '700' : '400' }]}
               numberOfLines={1}
             >
-              {item.lastMessage?.text || 'Tap to start chatting'}
+              {previewText}
             </Text>
           </View>
 
@@ -157,14 +161,14 @@ export default function ChatsScreen() {
         </TouchableOpacity>
       );
     },
-    [colors, me?.id, online, unreadByConversation, openConversation, storyAuthors, viewedStoryAuthors, openUserStory, moods]
+    [colors, me?.id, online, unreadByConversation, unreadPreviewByConversation, openConversation, storyAuthors, viewedStoryAuthors, openUserStory, moods]
   );
 
   const emptyText = useMemo(() => (isLoading ? '' : 'No chats yet. Start one from People.'), [isLoading]);
 
   const extraData = useMemo(
-    () => ({ unreadByConversation, storyAuthors, viewedStoryAuthors, onlineSize: online.size, moods }),
-    [unreadByConversation, storyAuthors, viewedStoryAuthors, online, moods]
+    () => ({ unreadByConversation, unreadPreviewByConversation, storyAuthors, viewedStoryAuthors, onlineSize: online.size, moods }),
+    [unreadByConversation, unreadPreviewByConversation, storyAuthors, viewedStoryAuthors, online, moods]
   );
 
   return (
@@ -214,7 +218,7 @@ export default function ChatsScreen() {
               {/* Text */}
               {storyViewer.text ? (
                 <View style={styles.storyTextWrap}>
-                  <Text style={styles.storyText}>{storyViewer.text}</Text>
+                  <Text style={[styles.storyText, { color: storyViewer.textColor || '#fff' }]}>{storyViewer.text}</Text>
                 </View>
               ) : null}
             </View>
@@ -239,7 +243,22 @@ const styles = StyleSheet.create({
   avatar: { width: 42, height: 42, borderRadius: 21 },
   avatarFallback: { borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontFamily: 'KshanaFont', fontSize: 16 },
-  moodBubble: { position: 'absolute', bottom: -2, right: -2, width: 28, height: 28, borderRadius: 14, backgroundColor: '#fff', borderWidth: 2, borderColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3, elevation: 3 },
+  moodBubble: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...(Platform.OS === 'web'
+      ? { boxShadow: '0px 2px 6px rgba(0, 0, 0, 0.15)' }
+      : { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 3, elevation: 3 }),
+  },
   moodEmoji: { fontSize: 16 },
   rowText: { flex: 1, gap: 2 },
   name: { fontFamily: 'KshanaFont', fontSize: 16 },
@@ -257,6 +276,6 @@ const styles = StyleSheet.create({
   storyAuthorName: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 14, fontWeight: '700' },
   storyTime: { color: 'rgba(255,255,255,0.7)', fontFamily: 'KshanaFont', fontSize: 11 },
   storyClose: { padding: 4 },
-  storyTextWrap: { padding: 20, paddingBottom: 32 },
-  storyText: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 20, textAlign: 'center' },
+  storyTextWrap: { padding: 20, paddingBottom: 32, backgroundColor: 'rgba(0,0,0,0.28)' },
+  storyText: { fontFamily: 'KshanaFont', fontSize: 20, textAlign: 'center' },
 });

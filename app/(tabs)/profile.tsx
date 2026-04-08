@@ -5,15 +5,15 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 import CustomInput from '@/components/CustomInput';
@@ -143,6 +143,10 @@ export default function ProfileScreen() {
     try {
       // Update profile in backend
       await apiCall(API_ENDPOINTS.UPDATE_PROFILE, 'PATCH', { mood }, true);
+      const updated = { ...form, mood };
+      setForm(updated);
+      setSnapshot(updated);
+      cacheSet('profile', updated);
       // Broadcast mood to other users via socket
       if (socket?.connected) {
         socket.emit('user:mood', { mood });
@@ -287,7 +291,7 @@ export default function ProfileScreen() {
       </ScrollView>
       <View style={styles.footerFixed}>
         <Text style={[styles.footerText, { color: colors.subtext }]}>
-          Version {Constants.expoConfig?.version || '1.0.0'} | Developer Kshana
+          Version {Constants.expoConfig?.version || '1.0.0'} | made with Developer's ❤️
         </Text>
       </View>
       <FabMenu />

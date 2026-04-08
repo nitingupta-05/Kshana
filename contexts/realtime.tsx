@@ -14,6 +14,7 @@ import { cacheGet, cacheSet } from '@/utils/cache';
 
 const CACHE_CONVOS = 'conversations';
 const READ_KEY = 'kshana_read_v2';
+const MOODS_KEY = 'kshana_moods_v1';
 
 type RealtimeContextValue = {
   socket: Socket | null;
@@ -21,6 +22,7 @@ type RealtimeContextValue = {
   moods: Record<string, string>;
   unreadCount: number;
   unreadByConversation: Record<string, number>;
+  unreadPreviewByConversation: Record<string, string>;
   conversations: PublicConversation[];
   storyAuthors: Set<string>;
   viewedStoryAuthors: Set<string>;
@@ -33,7 +35,8 @@ type RealtimeContextValue = {
 
 const RealtimeContext = createContext<RealtimeContextValue>({
   socket: null, online: new Set(), moods: {}, unreadCount: 0,
-  unreadByConversation: {}, conversations: [], storyAuthors: new Set(),
+  unreadByConversation: {}, unreadPreviewByConversation: {},
+  conversations: [], storyAuthors: new Set(),
   viewedStoryAuthors: new Set(),
   markStoryAuthorViewed: () => {},
   refreshConversations: async () => {},
@@ -46,6 +49,7 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadByConversation, setUnreadByConversation] = useState<Record<string, number>>({});
+  const [unreadPreviewByConversation, setUnreadPreviewByConversation] = useState<Record<string, string>>({});
   const [conversations, setConversations] = useState<PublicConversation[]>([]);
   const [storyAuthors, setStoryAuthors] = useState<Set<string>>(new Set());
   const [viewedStoryAuthors, setViewedStoryAuthors] = useState<Set<string>>(new Set());
@@ -61,7 +65,7 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
   const setupLockRef = useRef(false);
   const cancelledRef = useRef(false);
 
-  // Load persisted read set + cached conversations + viewed story authors
+  // Load persisted read set + cached conversations + viewed story authors + cached moods
   useEffect(() => {
     AsyncStorage.getItem(READ_KEY).then((raw) => {
       if (raw) { try { readSetRef.current = new Set(JSON.parse(raw)); } catch {} }
@@ -70,10 +74,40 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
     AsyncStorage.getItem('kshana_viewed_stories_v1').then((raw) => {
       if (raw) { try { setViewedStoryAuthors(new Set(JSON.parse(raw))); } catch {} }
     });
+    AsyncStorage.getItem(MOODS_KEY).then((raw) => {
+      if (raw) { try { setMoods(JSON.parse(raw)); } catch {} }
+    });
     cacheGet<PublicConversation[]>(CACHE_CONVOS, 5 * 60_000).then((c) => {
       if (c?.length) setConversations(c);
     });
   }, []);
+
+  const persistMoods = useCallback((next: Record<string, string>) => {
+    AsyncStorage.setItem(MOODS_KEY, JSON.stringify(next)).catch(() => {});
+  }, []);
+
+  const mergeMoodsFromConversations = useCallback((convos: PublicConversation[]) => {
+    setMoods((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const convo of convos) {
+        for (const p of convo.participants || []) {
+          if (!p?.id || typeof p.mood === 'undefined') continue;
+          if (next[p.id] !== p.mood) {
+            next[p.id] = p.mood ?? '';
+            changed = true;
+          }
+        }
+      }
+      if (!changed) return prev;
+      persistMoods(next);
+      return next;
+    });
+  }, [persistMoods]);
+
+  useEffect(() => {
+    if (conversations.length) mergeMoodsFromConversations(conversations);
+  }, [conversations, mergeMoodsFromConversations]);
 
   const persistReadSet = useCallback(() => {
     AsyncStorage.setItem(READ_KEY, JSON.stringify([...readSetRef.current])).catch(() => {});
@@ -89,11 +123,12 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
   const refreshConversations = useCallback(async () => {
     try {
       const data = await listConversations();
-      const convos = (data.conversations ?? []).filter((c: PublicConversation) => c.lastMessage !== null);
+      const convos = data.conversations ?? [];
       setConversations(convos);
+      mergeMoodsFromConversations(convos);
       cacheSet(CACHE_CONVOS, convos);
     } catch {}
-  }, []);
+  }, [mergeMoodsFromConversations]);
 
   // Update a single conversation in state — bubbles it to top and updates preview
   const upsertConversation = useCallback((convoId: string, patch: Partial<PublicConversation> & { lastMessage?: any }) => {
@@ -102,7 +137,7 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
       if (idx === -1) {
         // Unknown conversation — do a full refresh
         listConversations().then((data) => {
-          const fresh = (data.conversations ?? []).filter((c: PublicConversation) => c.lastMessage !== null);
+          const fresh = data.conversations ?? [];
           setConversations(fresh);
           cacheSet(CACHE_CONVOS, fresh);
         }).catch(() => {});
@@ -131,6 +166,12 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
       readSetRef.current.add(id);
       persistReadSet();
       setUnreadByConversation((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setUnreadPreviewByConversation((prev) => {
         if (!prev[id]) return prev;
         const next = { ...prev };
         delete next[id];
@@ -197,7 +238,11 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
     // Mood update
     s.on('user:mood', (p: any) => {
       if (!p?.userId) return;
-      setMoods((prev) => ({ ...prev, [p.userId]: p.mood ?? '' }));
+      setMoods((prev) => {
+        const next = { ...prev, [p.userId]: p.mood ?? '' };
+        persistMoods(next);
+        return next;
+      });
     });
 
     // New story — add author to storyAuthors, clear from viewed (it's a fresh story)
@@ -226,21 +271,48 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
       });
     });
 
-    // notify:new — only fires for the RECIPIENT, so always means an unread message
+    // notify:new - for messages this means an incoming message for the recipient
     s.on('notify:new', (payload: any) => {
       const type = payload?.notification?.type;
       const data = payload?.notification?.data;
 
       if (type === 'message' && data?.conversationId) {
         const convoId = String(data.conversationId);
-        readSetRef.current.delete(convoId);
-        persistReadSet();
+
+        // Keep people/chat cards fresh even when conversation room events are not joined.
+        {
+          const sender = data?.from
+            ? data.from
+            : { id: 'system', name: 'Unknown', email: '', description: '', profileImage: '' };
+          upsertConversation(convoId, {
+            lastMessage: {
+              id: payload?.notification?.id || `n_${Date.now()}`,
+              kind: 'text',
+              text: String(data?.text || ''),
+              createdAt: payload?.notification?.createdAt || new Date().toISOString(),
+              sender,
+            },
+            updatedAt: payload?.notification?.createdAt || new Date().toISOString(),
+          });
+        }
 
         // Increment badge only if not currently viewing this conversation
         if (activeConvRef.current !== convoId) {
+          readSetRef.current.delete(convoId);
+          persistReadSet();
           setUnreadByConversation((prev) => ({ ...prev, [convoId]: (prev[convoId] || 0) + 1 }));
+          setUnreadPreviewByConversation((prev) => ({ ...prev, [convoId]: String(data?.text || '') }));
+        } else {
+          // User is already inside chat, so keep it seen even across refreshes.
+          readSetRef.current.add(convoId);
+          persistReadSet();
+          setUnreadPreviewByConversation((prev) => {
+            if (!prev[convoId]) return prev;
+            const next = { ...prev };
+            delete next[convoId];
+            return next;
+          });
         }
-        // Don't touch conversations here — message:new already handled the preview update
       } else if (type && type !== 'message') {
         // Bell badge — use server-provided count if available
         const n = typeof payload?.unreadCount === 'number' ? payload.unreadCount : -1;
@@ -288,7 +360,7 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
 
         const onlineIds = await getOnlineAfterConnect();
 
-        const convos = (convRes.conversations ?? []).filter((c: PublicConversation) => c.lastMessage !== null);
+        const convos = convRes.conversations ?? [];
         const rawCounts: Record<string, number> = unreadConvoRes.counts || {};
         const filteredCounts: Record<string, number> = {};
         for (const [id, count] of Object.entries(rawCounts)) {
@@ -299,6 +371,7 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
         setUnreadCount(typeof unreadRes.count === 'number' ? unreadRes.count : 0);
         setUnreadByConversation(filteredCounts);
         setConversations(convos);
+        mergeMoodsFromConversations(convos);
         setSocket(s);
         cacheSet(CACHE_CONVOS, convos);
 
@@ -313,8 +386,9 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
           if (cancelledRef.current) return;
           try {
             const data = await listConversations();
-            const fresh = (data.conversations ?? []).filter((c: PublicConversation) => c.lastMessage !== null);
+            const fresh = data.conversations ?? [];
             setConversations(fresh);
+            mergeMoodsFromConversations(fresh);
             cacheSet(CACHE_CONVOS, fresh);
           } catch {}
         }, 4000);
@@ -355,10 +429,12 @@ export const RealtimeProvider = ({ children }: { children: React.ReactNode }) =>
   }, []);
 
   const value = useMemo(() => ({
-    socket, online, moods, unreadCount, unreadByConversation, conversations, storyAuthors,
+    socket, online, moods, unreadCount, unreadByConversation, unreadPreviewByConversation,
+    conversations, storyAuthors,
     viewedStoryAuthors, markStoryAuthorViewed,
     refreshConversations, refreshUnreadCount, joinConversation, setActiveConversation,
-  }), [socket, online, moods, unreadCount, unreadByConversation, conversations, storyAuthors,
+  }), [socket, online, moods, unreadCount, unreadByConversation, unreadPreviewByConversation,
+    conversations, storyAuthors,
     viewedStoryAuthors, markStoryAuthorViewed,
     refreshConversations, refreshUnreadCount, joinConversation, setActiveConversation]);
 

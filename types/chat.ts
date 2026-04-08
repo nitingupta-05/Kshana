@@ -54,6 +54,7 @@ export type Story = {
   text: string;
   image?: string;
   bgColor: string;
+  textColor?: string;
   createdAt: string;
   expiresAt: string;
   viewedBy: string[];

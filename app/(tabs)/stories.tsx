@@ -13,6 +13,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import type { PublicUser, Story } from '@/types/chat';
 
 const BG_COLORS = ['#7c3aed', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'];
+const TEXT_COLORS = ['#ffffff', '#fef08a', '#fde68a', '#fca5a5', '#86efac', '#93c5fd', '#111827'];
 
 const timeAgo = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
@@ -41,6 +42,7 @@ export default function StoriesScreen() {
   const [composing, setComposing] = useState(false);
   const [storyText, setStoryText] = useState('');
   const [storyBg, setStoryBg] = useState(BG_COLORS[0]);
+  const [storyTextColor, setStoryTextColor] = useState(TEXT_COLORS[0]);
   const [storyImage, setStoryImage] = useState('');
   const [posting, setPosting] = useState(false);
 
@@ -109,7 +111,12 @@ export default function StoriesScreen() {
     if (!storyText.trim() && !storyImage) return;
     setPosting(true);
     try {
-      const data = await postStory({ text: storyText.trim(), image: storyImage, bgColor: storyBg });
+      const data = await postStory({
+        text: storyText.trim(),
+        image: storyImage,
+        bgColor: storyBg,
+        textColor: storyTextColor,
+      });
       if (data?.story) {
         setStories((prev) => [data.story, ...prev]);
         if (data.story.author?.id) setMyId(data.story.author.id);
@@ -118,6 +125,7 @@ export default function StoriesScreen() {
       setStoryText('');
       setStoryImage('');
       setStoryBg(BG_COLORS[0]);
+      setStoryTextColor(TEXT_COLORS[0]);
     } catch {}
     setPosting(false);
   };
@@ -243,7 +251,7 @@ export default function StoriesScreen() {
               {/* Story text */}
               {viewing.text ? (
                 <View style={styles.viewerTextWrap}>
-                  <Text style={styles.viewerText}>{viewing.text}</Text>
+                  <Text style={[styles.viewerText, { color: viewing.textColor || '#fff' }]}>{viewing.text}</Text>
                 </View>
               ) : null}
 
@@ -325,7 +333,11 @@ export default function StoriesScreen() {
                 ? <Image source={{ uri: storyImage }} style={StyleSheet.absoluteFill} resizeMode="cover" />
                 : null
               }
-              {storyText ? <Text style={styles.previewText}>{storyText}</Text> : null}
+              {storyText ? (
+                <View style={styles.previewTextPanel}>
+                  <Text style={[styles.previewText, { color: storyTextColor }]}>{storyText}</Text>
+                </View>
+              ) : null}
             </View>
             <TextInput
               value={storyText}
@@ -353,6 +365,23 @@ export default function StoriesScreen() {
                   key={c}
                   style={[styles.bgSwatch, { backgroundColor: c, borderWidth: storyBg === c ? 3 : 0, borderColor: '#fff' }]}
                   onPress={() => setStoryBg(c)}
+                />
+              ))}
+            </View>
+            <Text style={[styles.bgLabel, { color: colors.subtext }]}>Text color</Text>
+            <View style={styles.bgRow}>
+              {TEXT_COLORS.map((c) => (
+                <TouchableOpacity
+                  key={c}
+                  style={[
+                    styles.textSwatch,
+                    {
+                      backgroundColor: c,
+                      borderWidth: storyTextColor === c ? 3 : 1,
+                      borderColor: storyTextColor === c ? colors.primary : colors.border,
+                    },
+                  ]}
+                  onPress={() => setStoryTextColor(c)}
                 />
               ))}
             </View>
@@ -388,16 +417,16 @@ const styles = StyleSheet.create({
   // Viewer
   viewer: { flex: 1 },
   viewerImage: { ...StyleSheet.absoluteFillObject },
-  viewerOverlay: { flex: 1, justifyContent: 'space-between' },
+  viewerOverlay: { flex: 1, justifyContent: 'flex-start' },
   viewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, paddingTop: 56 },
   viewerAuthorRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   viewerAvatar: { width: 40, height: 40, borderRadius: 20 },
   viewerName: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 15, fontWeight: '700' },
   viewerTime: { color: 'rgba(255,255,255,0.7)', fontFamily: 'KshanaFont', fontSize: 12 },
   viewerClose: { padding: 4 },
-  viewerTextWrap: { padding: 24, paddingBottom: 60 },
-  viewerText: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 22, textAlign: 'center' },
-  viewerFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 36, paddingTop: 12 },
+  viewerTextWrap: { marginTop: 'auto', paddingHorizontal: 24, paddingVertical: 14, backgroundColor: 'rgba(0,0,0,0.28)' },
+  viewerText: { fontFamily: 'KshanaFont', fontSize: 22, textAlign: 'center' },
+  viewerFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 36, paddingTop: 12, backgroundColor: 'rgba(0,0,0,0.18)' },
   viewerFooterText: { color: 'rgba(255,255,255,0.85)', fontFamily: 'KshanaFont', fontSize: 15, flex: 1 },
   // Viewers sheet
   viewersSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, maxHeight: '60%' },
@@ -417,12 +446,14 @@ const styles = StyleSheet.create({
   postBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
   postBtnText: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 14 },
   composeBody: { padding: 16, gap: 16 },
-  preview: { height: 220, borderRadius: 16, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  previewText: { color: '#fff', fontFamily: 'KshanaFont', fontSize: 20, textAlign: 'center', padding: 16 },
+  preview: { height: 220, borderRadius: 16, justifyContent: 'flex-end', overflow: 'hidden' },
+  previewTextPanel: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: 'rgba(0,0,0,0.28)' },
+  previewText: { fontFamily: 'KshanaFont', fontSize: 20, textAlign: 'center' },
   storyInput: { borderWidth: 1, borderRadius: 12, padding: 12, fontFamily: 'KshanaFont', fontSize: 15, minHeight: 80, textAlignVertical: 'top' },
   imagePicker: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderWidth: 1, borderRadius: 12, borderStyle: 'dashed' },
   imagePickerText: { fontFamily: 'KshanaFont', fontSize: 14 },
   bgLabel: { fontFamily: 'KshanaFont', fontSize: 13 },
   bgRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
   bgSwatch: { width: 36, height: 36, borderRadius: 18 },
+  textSwatch: { width: 36, height: 36, borderRadius: 18 },
 });

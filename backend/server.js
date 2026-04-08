@@ -29,6 +29,12 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 5001;
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
+const DB_STATE = {
+  0: "disconnected",
+  1: "connected",
+  2: "connecting",
+  3: "disconnecting",
+};
 const onlineCounts = new Map(); // userId -> socket count
 
 app.use(cors(corsOptions));
@@ -175,6 +181,7 @@ const storySchema = new mongoose.Schema(
     text: { type: String, default: "" },
     image: { type: String, default: "" },
     bgColor: { type: String, default: "#7c3aed" },
+    textColor: { type: String, default: "#ffffff" },
     expiresAt: { type: Date, required: true, index: { expireAfterSeconds: 0 } },
     viewedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   },
@@ -219,11 +226,11 @@ const ensureConversationAccess = async (conversationId, userId) => {
 
 const populateConversation = async (conversationId) => {
   return await Conversation.findById(conversationId)
-    .populate("participants", "name email description profileImage")
+    .populate("participants", "name email description profileImage mood")
     .populate({
       path: "lastMessage",
       select: "kind text createdAt sender",
-      populate: { path: "sender", select: "name email profileImage" },
+      populate: { path: "sender", select: "name email profileImage mood" },
     });
 };
 
@@ -307,6 +314,7 @@ const toPublicStory = (s) => {
     text: s.text || "",
     image: s.image || "",
     bgColor: s.bgColor || "#7c3aed",
+    textColor: s.textColor || "#ffffff",
     createdAt: s.createdAt,
     expiresAt: s.expiresAt,
     viewedBy: (s.viewedBy || []).map((id) => id.toString()),
@@ -344,12 +352,44 @@ app.get("/", (_, res) => {
 });
 
 app.get("/healthz", (_, res) => {
-  res.json({ ok: true });
+  const state = mongoose.connection.readyState;
+  const db = DB_STATE[state] || "unknown";
+  const ok = state === 1;
+  res.status(ok ? 200 : 503).json({ ok, db });
 });
 
 // Keep-alive ping — called by UptimeRobot every 5 min to prevent cold starts
 app.get("/ping", (_, res) => {
   res.json({ ok: true, ts: Date.now() });
+});
+
+// Compatibility aliases for /api-level health checks
+app.get("/api", (_, res) => {
+  res.json({ ok: true, service: "kshana-backend" });
+});
+
+app.get("/api/healthz", (_, res) => {
+  const state = mongoose.connection.readyState;
+  const db = DB_STATE[state] || "unknown";
+  const ok = state === 1;
+  res.status(ok ? 200 : 503).json({ ok, db });
+});
+
+app.get("/api/ping", (_, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// Warm-up endpoint for cold starts and proactive checks
+app.get("/api/warmup", async (_, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ ok: false, db: DB_STATE[mongoose.connection.readyState] || "unknown" });
+    }
+    await mongoose.connection.db.admin().ping();
+    return res.json({ ok: true, db: "connected", ts: Date.now() });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: err?.message || "warmup_failed" });
+  }
 });
 
 // --- Auth
@@ -416,6 +456,7 @@ app.get("/api/auth/verify", verifyToken, async (req, res) => {
         email: user.email,
         description: user.description,
         profileImage: user.profileImage,
+        mood: user.mood ?? "",
       },
     });
   } catch (err) {
@@ -477,7 +518,7 @@ app.get("/api/users", verifyToken, async (req, res) => {
     }
 
     const users = await User.find(query)
-      .select("name email description profileImage")
+      .select("name email description profileImage mood")
       .sort({ createdAt: -1 })
       .limit(50);
 
@@ -508,7 +549,7 @@ app.get("/api/suggestions", verifyToken, async (req, res) => {
 
     const rx = new RegExp(`@${escapeRegex(domain)}$`, "i");
     const users = await User.find({ _id: { $ne: req.userId }, email: rx })
-      .select("name email description profileImage")
+      .select("name email description profileImage mood")
       .sort({ createdAt: -1 })
       .limit(15);
 
@@ -546,8 +587,8 @@ app.post("/api/requests", verifyToken, async (req, res) => {
     }
 
     const populated = await Request.findById(requestDoc._id)
-      .populate("from", "name email description profileImage")
-      .populate("to", "name email description profileImage");
+      .populate("from", "name email description profileImage mood")
+      .populate("to", "name email description profileImage mood");
 
     const notification = await Notification.create({
       user: toUserId,
@@ -572,8 +613,8 @@ app.get("/api/requests/incoming", verifyToken, async (req, res) => {
   try {
     const requests = await Request.find({ to: req.userId, status: "pending" })
       .sort({ createdAt: -1 })
-      .populate("from", "name email description profileImage")
-      .populate("to", "name email description profileImage");
+      .populate("from", "name email description profileImage mood")
+      .populate("to", "name email description profileImage mood");
 
     res.json({ requests: requests.map(toPublicRequest) });
   } catch (err) {
@@ -612,7 +653,7 @@ app.post("/api/requests/:id/accept", verifyToken, async (req, res) => {
     await requestDoc.save();
 
     const fromUserId = requestDoc.from.toString();
-    const meUser = await User.findById(req.userId).select("name email description profileImage");
+    const meUser = await User.findById(req.userId).select("name email description profileImage mood");
 
     const notification = await Notification.create({
       user: fromUserId,
@@ -627,8 +668,8 @@ app.post("/api/requests/:id/accept", verifyToken, async (req, res) => {
     });
 
     const populated = await Request.findById(requestDoc._id)
-      .populate("from", "name email description profileImage")
-      .populate("to", "name email description profileImage");
+      .populate("from", "name email description profileImage mood")
+      .populate("to", "name email description profileImage mood");
 
     res.json({ request: toPublicRequest(populated) });
   } catch (err) {
@@ -745,7 +786,7 @@ app.post("/api/conversations/:id/read", verifyToken, async (req, res) => {
         user: req.userId,
         type: "message",
         readAt: null,
-        "data.conversationId": conversation._id,
+        "data.conversationId": String(conversation._id),
       },
       { $set: { readAt: new Date() } }
     );
@@ -875,7 +916,7 @@ app.get("/api/stories", verifyToken, async (req, res) => {
       expiresAt: { $gt: now },
     })
       .sort({ createdAt: -1 })
-      .populate("author", "name email profileImage");
+      .populate("author", "name email profileImage mood");
 
     res.json({ stories: stories.map(toPublicStory) });
   } catch (err) {
@@ -887,7 +928,7 @@ app.get("/api/stories", verifyToken, async (req, res) => {
 // Post a new story
 app.post("/api/stories", verifyToken, async (req, res) => {
   try {
-    const { text, image, bgColor } = req.body;
+    const { text, image, bgColor, textColor } = req.body;
     if (!text && !image) return res.status(400).json({ msg: "text or image required" });
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
@@ -896,10 +937,11 @@ app.post("/api/stories", verifyToken, async (req, res) => {
       text: text || "",
       image: image || "",
       bgColor: bgColor || "#7c3aed",
+      textColor: textColor || "#ffffff",
       expiresAt,
     });
 
-    const populated = await Story.findById(story._id).populate("author", "name email profileImage");
+    const populated = await Story.findById(story._id).populate("author", "name email profileImage mood");
     const pub = toPublicStory(populated);
 
     // Notify contacts via socket
@@ -927,7 +969,7 @@ app.post("/api/stories/:id/view", verifyToken, async (req, res) => {
 // Get viewers of a story (only author can see full list)
 app.get("/api/stories/:id/viewers", verifyToken, async (req, res) => {
   try {
-    const story = await Story.findById(req.params.id).populate("viewedBy", "name email profileImage");
+    const story = await Story.findById(req.params.id).populate("viewedBy", "name email profileImage mood");
     if (!story) return res.status(404).json({ msg: "Story not found" });
     if (story.author.toString() !== req.userId.toString()) {
       return res.status(403).json({ msg: "Not allowed" });
@@ -1016,11 +1058,11 @@ app.get("/api/conversations", verifyToken, async (req, res) => {
   try {
     const conversations = await Conversation.find({ participants: req.userId })
       .sort({ updatedAt: -1 })
-      .populate("participants", "name email description profileImage")
+      .populate("participants", "name email description profileImage mood")
       .populate({
         path: "lastMessage",
         select: "kind text createdAt sender",
-        populate: { path: "sender", select: "name email profileImage" },
+        populate: { path: "sender", select: "name email profileImage mood" },
       });
 
     res.json({
@@ -1060,7 +1102,7 @@ app.get("/api/conversations/:id/messages", verifyToken, async (req, res) => {
     const messages = await Message.find({ conversation: conversation._id })
       .sort({ createdAt: -1 })
       .limit(limit)
-      .populate("sender", "name email profileImage")
+      .populate("sender", "name email profileImage mood")
       .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
     messages.reverse();
@@ -1109,7 +1151,7 @@ app.post("/api/conversations/:id/messages", verifyToken, async (req, res) => {
     await conversation.save();
 
     const populated = await Message.findById(msg._id)
-      .populate("sender", "name email profileImage")
+      .populate("sender", "name email profileImage mood")
       .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
     const wireMessage = toPublicMessage(populated);
@@ -1119,7 +1161,7 @@ app.post("/api/conversations/:id/messages", verifyToken, async (req, res) => {
     });
 
     const senderUser = await User.findById(req.userId).select(
-      "name email description profileImage"
+      "name email description profileImage mood"
     );
 
     for (const recipientId of recipients) {
@@ -1187,6 +1229,37 @@ io.on("connection", (socket) => {
   onlineCounts.set(socket.userId, current + 1);
   io.emit("user:online", { userId: socket.userId });
 
+  // When user comes online, mark any pending messages as delivered
+  // so sender tick state upgrades from single -> double in realtime.
+  (async () => {
+    try {
+      const conversations = await Conversation.find({ participants: socket.userId }).select("_id");
+      for (const convo of conversations) {
+        const result = await Message.updateMany(
+          {
+            conversation: convo._id,
+            sender: { $ne: socket.userId },
+            deliveredTo: { $ne: socket.userId },
+          },
+          { $addToSet: { deliveredTo: socket.userId } }
+        );
+        const modified =
+          typeof result.modifiedCount === "number"
+            ? result.modifiedCount
+            : (result.nModified || 0);
+        if (modified > 0) {
+          io.to(`conversation:${convo._id}`).emit("message:status", {
+            conversationId: String(convo._id),
+            userId: String(socket.userId),
+            status: "delivered",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Online delivery sync error:", err?.message || err);
+    }
+  })();
+
   socket.on("conversation:join", async (payload, cb) => {
     try {
       const conversationId = payload?.conversationId;
@@ -1245,7 +1318,7 @@ io.on("connection", (socket) => {
       await conversation.save();
 
       const populated = await Message.findById(msg._id)
-        .populate("sender", "name email profileImage")
+        .populate("sender", "name email profileImage mood")
         .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
       const wireMessage = toPublicMessage(populated);
@@ -1265,7 +1338,7 @@ io.on("connection", (socket) => {
       }
 
       const senderUser = await User.findById(socket.userId).select(
-        "name email description profileImage"
+        "name email description profileImage mood"
       );
 
       for (const recipientId of recipients) {
@@ -1438,24 +1511,28 @@ app.delete("/admin/users/:id", verifyAdmin, async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://0.0.0.0:${PORT}`);
 
-  // ── Self-ping to prevent Render free tier cold starts ──────────────────
-  // Render sets RENDER_EXTERNAL_HOSTNAME automatically on every deploy.
-  // We ping our own /ping endpoint every 4 minutes so the dyno never idles.
-  const renderHost =
-    process.env.RENDER_EXTERNAL_HOSTNAME ||   // set by Render automatically
-    process.env.RENDER_EXTERNAL_URL?.replace(/^https?:\/\//, '');
+  const explicitUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
+  const renderHost = (process.env.RENDER_EXTERNAL_HOSTNAME || "").trim();
+  const baseUrl = explicitUrl
+    ? explicitUrl.replace(/\/+$/, "")
+    : (renderHost ? `https://${renderHost}` : "");
+  const pingUrl = baseUrl ? `${baseUrl}/api/ping` : "";
+  const intervalMs = Math.max(60_000, Number(process.env.SELF_PING_INTERVAL_MS || 240_000));
+  const enableSelfPing = process.env.ENABLE_SELF_PING
+    ? String(process.env.ENABLE_SELF_PING).toLowerCase() === "true"
+    : Boolean(pingUrl);
 
-  if (renderHost) {
-    const pingUrl = `https://${renderHost}/ping`;
-    console.log(`Self-ping enabled → ${pingUrl} every 4 min`);
+  // Render keep-warm ping (optional)
+  if (enableSelfPing && pingUrl) {
+    console.log(`Self-ping enabled -> ${pingUrl} every ${Math.round(intervalMs / 60000)} min`);
     setInterval(async () => {
       try {
         const res = await fetch(pingUrl);
-        console.log(`[keep-alive] ${new Date().toISOString()} → ${res.status}`);
+        console.log(`[keep-alive] ${new Date().toISOString()} -> ${res.status}`);
       } catch (e) {
         console.warn(`[keep-alive] ping failed: ${e.message}`);
       }
-    }, 4 * 60 * 1000); // every 4 minutes
+    }, intervalMs);
   } else {
     console.log("Self-ping skipped (not running on Render)");
   }
