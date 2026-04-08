@@ -20,7 +20,8 @@ const corsOptions = {
   origin: ALLOWED_ORIGINS.includes("*")
     ? "*"
     : ALLOWED_ORIGINS,
-  methods: ["GET", "POST", "PATCH"],
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-admin-secret"],
 };
 
 const io = new Server(server, {

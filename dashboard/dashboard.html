@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kshana — Developer Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Mobile topbar -->
+  <header class="topbar">
+    <span class="topbar-logo">⚡ Kshana Dev</span>
+    <button class="hamburger" id="menuBtn" aria-label="Toggle menu">☰</button>
+  </header>
+
+  <!-- Sidebar overlay (mobile tap-to-close) -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-logo">
+        <h2>⚡ Kshana Dev</h2>
+        <span>Developer Dashboard</span>
+      </div>
+      <nav>
+        <div class="nav-item active" data-page="overview">
+          <span class="nav-icon">📊</span> Overview
+        </div>
+        <div class="nav-item" data-page="users">
+          <span class="nav-icon">👥</span> Users
+        </div>
+        <div class="nav-item" data-page="broadcast">
+          <span class="nav-icon">📢</span> Broadcast
+        </div>
+        <div class="nav-item" data-page="history">
+          <span class="nav-icon">📋</span> History
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div style="font-size:12px;color:var(--subtext);margin-bottom:10px;">
+          <span class="online-dot"></span> Connected
+        </div>
+        <button class="logout-btn" onclick="logout()">🚪 Logout</button>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+      <!-- Overview -->
+      <div class="page active" id="page-overview">
+        <div class="page-title">Overview</div>
+        <div class="page-sub">Real-time stats for Kshana</div>
+        <div class="stats-grid" id="statsGrid">
+          <div class="loading"><div class="spinner"></div>Loading stats...</div>
+        </div>
+        <div class="table-card" style="margin-top:0">
+          <div class="table-header">
+            <h3>Recent Users</h3>
+            <span style="font-size:13px;color:var(--subtext)" id="recentCount"></span>
+          </div>
+          <div class="table-scroll">
+            <div id="recentUsers"><div class="loading"><div class="spinner"></div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users -->
+      <div class="page" id="page-users">
+        <div class="page-title">All Users</div>
+        <div class="page-sub">Manage registered users</div>
+        <div class="table-card">
+          <div class="table-header">
+            <h3>Users <span id="userCount" style="color:var(--subtext);font-weight:400;font-size:14px"></span></h3>
+            <input class="search-input" id="userSearch" placeholder="🔍  Search name or email..." oninput="filterUsers()" />
+          </div>
+          <div class="table-scroll">
+            <div id="usersTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Broadcast -->
+      <div class="page" id="page-broadcast">
+        <div class="page-title">Broadcast</div>
+        <div class="page-sub">Send notifications to all users</div>
+        <div class="broadcast-card">
+          <h3>📢 New Broadcast</h3>
+          <div style="margin-bottom:16px">
+            <div style="font-size:13px;color:var(--subtext);margin-bottom:8px">Quick templates</div>
+            <div class="template-chips">
+              <div class="chip" onclick="useTemplate('update')">🚀 New Update</div>
+              <div class="chip" onclick="useTemplate('feature')">✨ New Feature</div>
+              <div class="chip" onclick="useTemplate('event')">🎉 Event</div>
+              <div class="chip" onclick="useTemplate('maintenance')">🔧 Maintenance</div>
+              <div class="chip" onclick="useTemplate('welcome')">👋 Welcome</div>
+            </div>
+          </div>
+          <div class="form-field">
+            <label>Title</label>
+            <input type="text" id="bcTitle" placeholder="e.g. New Feature Available!" maxlength="80" oninput="updateCharCount()" />
+            <div class="char-count"><span id="titleCount">0</span>/80</div>
+          </div>
+          <div class="form-field">
+            <label>Message</label>
+            <textarea id="bcMessage" placeholder="Write your message here..." maxlength="500" oninput="updateCharCount()"></textarea>
+            <div class="char-count"><span id="msgCount">0</span>/500</div>
+          </div>
+          <div class="send-row">
+            <button class="btn-primary" onclick="sendBroadcast()">Send to All Users</button>
+            <span class="recipient-info">→ <strong id="recipientCount">...</strong> users</span>
+          </div>
+          <div class="success-toast" id="successToast">✅ Broadcast sent successfully!</div>
+          <p id="bcError" class="error-msg"></p>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="page" id="page-history">
+        <div class="page-title">Broadcast History</div>
+        <div class="page-sub">Previously sent notifications</div>
+        <div id="historyList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="backend.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // Mobile sidebar toggle
+    const menuBtn = document.getElementById('menuBtn');
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+
+    function openSidebar() {
+      sidebar.classList.add('open');
+      overlay.classList.add('open');
+    }
+    function closeSidebar() {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('open');
+    }
+
+    menuBtn.addEventListener('click', () => {
+      sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+    });
+    overlay.addEventListener('click', closeSidebar);
+
+    // Close sidebar on nav click (mobile)
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', () => {
+        if (window.innerWidth <= 640) closeSidebar();
+      });
+    });
+  </script>
+</body>
+</html>

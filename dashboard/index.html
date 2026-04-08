@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kshana Developer Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <div class="login-logo">K</div>
+    <h1>Kshana Dev</h1>
+    <p class="login-sub">Developer Dashboard</p>
+    <form id="loginForm">
+      <div class="field">
+        <label>Admin Secret</label>
+        <input type="password" id="secretInput" placeholder="Enter admin secret" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label>Backend URL</label>
+        <input type="text" id="apiInput" placeholder="http://localhost:5001" />
+      </div>
+      <button type="submit" class="btn-primary">Access Dashboard</button>
+      <p id="loginError" class="error-msg"></p>
+    </form>
+  </div>
+
+  <script src="backend.js"></script>
+  <script>
+    const apiInput = document.getElementById('apiInput');
+    const loginError = document.getElementById('loginError');
+    const loginBtn = document.querySelector('.btn-primary');
+    const loginForm = document.getElementById('loginForm');
+
+    apiInput.value = window.BackendConfig.defaultApi;
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const secret = document.getElementById('secretInput').value.trim();
+      const preferredBase = window.BackendConfig.normalizeApiBase(apiInput.value);
+      loginError.textContent = '';
+
+      if (!secret) {
+        loginError.textContent = 'Admin secret is required';
+        return;
+      }
+
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Connecting...';
+
+      const result = await window.BackendConfig.findWorkingApi({
+        preferredBase,
+        path: '/admin/login',
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret }),
+        },
+        validate: ({ status, ok, data }) => ok || ([400, 401, 403].includes(status) && Boolean(data && data.msg)),
+      });
+
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Access Dashboard';
+
+      if (!result) {
+        loginError.textContent = 'Cannot connect to backend';
+        return;
+      }
+
+      if (!result.ok) {
+        loginError.textContent = result.data?.msg || 'Invalid secret';
+        return;
+      }
+
+      sessionStorage.setItem('adminSecret', secret);
+      window.BackendConfig.persistApiBase(result.base);
+      window.location.href = 'dashboard.html';
+    });
+  </script>
+</body>
+</html>
