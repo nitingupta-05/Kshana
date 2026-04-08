@@ -4,6 +4,13 @@ export type PublicUser = {
   email: string;
   description?: string;
   profileImage?: string;
+  mood?: string;
+};
+
+export type Reaction = {
+  emoji: string;
+  userId: string;
+  userName: string;
 };
 
 export type PublicMessage = {
@@ -13,8 +20,15 @@ export type PublicMessage = {
   kind: 'text';
   text: string;
   createdAt: string;
+  expiresAt?: string | null;
   deliveredTo: string[];
   readBy: string[];
+  reactions: Reaction[];
+  replyTo?: {
+    id: string;
+    text: string;
+    senderName: string;
+  } | null;
 };
 
 export type PublicConversation = {
@@ -31,4 +45,24 @@ export type PublicConversation = {
   };
   updatedAt: string;
   createdAt: string;
+  disappearAfter: number; // seconds; 0 = off
+};
+
+export type Story = {
+  id: string;
+  author: PublicUser;
+  text: string;
+  image?: string;
+  bgColor: string;
+  createdAt: string;
+  expiresAt: string;
+  viewedBy: string[];
+};
+
+// Chat theme stored per-conversation in AsyncStorage
+export type ChatTheme = {
+  myBubble: string;
+  theirBubble: string;
+  myText: string;
+  theirText: string;
 };

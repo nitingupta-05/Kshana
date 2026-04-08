@@ -61,10 +61,10 @@ export function FabMenu() {
   };
 
   return (
-    <View style={styles.container} pointerEvents="box-none">
+    <View style={[styles.container, styles.pointerEventsNone]}>
       {open && <Pressable style={styles.overlay} onPress={() => setOpen(false)} />}
 
-      <View style={styles.stack} pointerEvents="box-none">
+      <View style={[styles.stack, styles.pointerEventsNone]}>
         {/* Menu items with staggered slide-in */}
         <View style={styles.menu}>
           {visibleMenuItems.map((item, i) => {
@@ -118,4 +118,5 @@ const styles = StyleSheet.create({
   menu: { marginBottom: 10, alignItems: 'flex-end', gap: 8 },
   menuItem: { width: 50, height: 50, borderRadius: 25, borderWidth: 1, alignItems: 'center', justifyContent: 'center', elevation: 4 },
   fab: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center', elevation: 6 },
+  pointerEventsNone: { pointerEvents: 'box-none' as any },
 });

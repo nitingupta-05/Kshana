@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kshana",
     "slug": "Kshana",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
     "scheme": "kshana",
@@ -33,7 +33,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/logo.png",
-          "imageWidth": 200,
+          "imageWidth": 50,
           "resizeMode": "contain",
           "backgroundColor": "#232323",
           "dark": {
@@ -42,7 +42,10 @@
         }
       ],
       [
-        "expo-font"
+        "expo-font",
+        {
+          "fontFamily": "KshanaFont"
+        }
       ]
     ],
     "experiments": {
@@ -50,7 +53,10 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {}
+      "router": {},
+      "eas": {
+        "projectId": "6c904208-232d-41b8-9607-1307ce10df3f"
+      }
     }
   }
 }

@@ -1,26 +1,24 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 import { FabMenu } from '@/components/FabMenu';
 import {
-    acceptRequest,
-    listIncomingRequests,
-    listNotifications,
-    listSuggestions,
-    markAllNotificationsRead,
-    markNotificationRead,
-    rejectRequest,
-    sendRequest,
+  acceptRequest,
+  listIncomingRequests,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  rejectRequest,
 } from '@/config/api';
 import { useRealtime } from '@/contexts/realtime';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -35,7 +33,7 @@ type RequestItem = {
 
 type NotificationItem = {
   id: string;
-  type: 'request_received' | 'request_accepted' | 'message';
+  type: 'request_received' | 'request_accepted' | 'message' | 'broadcast';
   data: any;
   readAt: string | null;
   createdAt: string;
@@ -44,26 +42,23 @@ type NotificationItem = {
 export default function NotificationsScreen() {
   const colors = useThemeColor();
   const router = useRouter();
-  const { refreshUnreadCount } = useRealtime();
+  const { refreshUnreadCount, socket } = useRealtime();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [incoming, setIncoming] = useState<RequestItem[]>([]);
-  const [suggestions, setSuggestions] = useState<PublicUser[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   const load = useCallback(async () => {
     setError('');
     setLoading(true);
     try {
-      const [reqRes, sugRes, notRes] = await Promise.all([
+      const [reqRes, notRes] = await Promise.all([
         listIncomingRequests(),
-        listSuggestions(),
         listNotifications({ limit: 50 }),
       ]);
 
       setIncoming(reqRes.requests ?? []);
-      setSuggestions(sugRes.users ?? []);
       // exclude message-type notifications — those are handled in the chat list
       setNotifications((notRes.notifications ?? []).filter((n: NotificationItem) => n.type !== 'message'));
       await refreshUnreadCount();
@@ -79,6 +74,14 @@ export default function NotificationsScreen() {
       load();
     }, [load])
   );
+
+  // Reload when a broadcast arrives while on this page
+  useEffect(() => {
+    if (!socket) return;
+    const onBroadcast = () => load();
+    socket.on('notify:broadcast', onBroadcast);
+    return () => { socket.off('notify:broadcast', onBroadcast); };
+  }, [socket, load]);
 
   const onAccept = useCallback(
     async (id: string) => {
@@ -99,18 +102,6 @@ export default function NotificationsScreen() {
         await load();
       } catch (e: any) {
         setError(e.message || 'Failed to reject request');
-      }
-    },
-    [load]
-  );
-
-  const onRequest = useCallback(
-    async (toUserId: string) => {
-      try {
-        await sendRequest(toUserId);
-        await load();
-      } catch (e: any) {
-        setError(e.message || 'Failed to send request');
       }
     },
     [load]
@@ -210,34 +201,6 @@ export default function NotificationsScreen() {
             ))
           )}
 
-          <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 18 }]}>Suggested</Text>
-          {suggestions.length === 0 ? (
-            <Text style={[styles.muted, { color: colors.subtext }]}>No suggestions right now.</Text>
-          ) : (
-            suggestions.slice(0, 10).map((u) => (
-              <View
-                key={u.id}
-                style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-              >
-                <View style={styles.cardRow}>
-                  <Text style={[styles.cardTitle, { color: colors.text }]} numberOfLines={1}>
-                    {u.name}
-                  </Text>
-                  <TouchableOpacity
-                    style={[styles.pill, { borderColor: colors.border }]}
-                    onPress={() => onRequest(u.id)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.pillText, { color: colors.primary }]}>Request</Text>
-                  </TouchableOpacity>
-                </View>
-                <Text style={[styles.cardMeta, { color: colors.subtext }]} numberOfLines={1}>
-                  {u.email}
-                </Text>
-              </View>
-            ))
-          )}
-
           <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 18 }]}>All</Text>
           {notifications.length === 0 ? (
             <Text style={[styles.muted, { color: colors.subtext }]}>No notifications.</Text>
@@ -266,6 +229,8 @@ export default function NotificationsScreen() {
                       ? 'New request'
                       : n.type === 'request_accepted'
                       ? 'Request accepted'
+                      : n.type === 'broadcast'
+                      ? `📢 ${n.data?.title || 'Announcement'}`
                       : 'New message'}
                   </Text>
                   <Text style={[styles.cardMeta, { color: colors.subtext }]}>
@@ -277,6 +242,8 @@ export default function NotificationsScreen() {
                     ? `From: ${n.data?.from?.name || 'Unknown'}`
                     : n.type === 'request_accepted'
                     ? `By: ${n.data?.by?.name || 'Unknown'}`
+                    : n.type === 'broadcast'
+                    ? n.data?.message || ''
                     : `${n.data?.from?.name || 'Unknown'}: ${n.data?.text || 'Message'}`}
                 </Text>
               </TouchableOpacity>

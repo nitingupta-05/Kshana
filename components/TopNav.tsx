@@ -37,6 +37,13 @@ export default function TopNav() {
 
         <TouchableOpacity
           activeOpacity={0.85}
+          style={styles.iconBtn}
+          onPress={() => router.push('/(tabs)/stories')}
+        >
+          <Ionicons name="aperture-outline" size={22} color={colors.text} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          activeOpacity={0.85}
           style={styles.bellWrap}
           onPress={() => router.push('/(tabs)/notifications')}
         >
@@ -78,6 +85,13 @@ const styles = StyleSheet.create({
     fontFamily: 'KshanaFont',
   },
   bellWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,

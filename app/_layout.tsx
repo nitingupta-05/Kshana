@@ -29,21 +29,15 @@ function RootLayout() {
     const init = async () => {
       try {
         const token = await getToken();
-        // Small delay ensures navigator is mounted before navigating
-        setTimeout(() => {
-          if (token) {
-            router.replace('/(tabs)');
-          } else {
-            router.replace('/(pages)/login');
-          }
-          SplashScreen.hideAsync();
-        }, 0);
-      } catch (error) {
-        console.error('Init error:', error);
-        setTimeout(() => {
+        if (token) {
+          router.replace('/(tabs)');
+        } else {
           router.replace('/(pages)/login');
-          SplashScreen.hideAsync();
-        }, 0);
+        }
+      } catch {
+        router.replace('/(pages)/login');
+      } finally {
+        SplashScreen.hideAsync();
       }
     };
     init();
@@ -51,10 +45,9 @@ function RootLayout() {
 
   useEffect(() => {
     const unsubscribe = subscribeAuthRequired(() => {
-      Alert.alert('Session expired', 'Please login again.', [
-        { text: 'Cancel', style: 'cancel' },
+      Alert.alert('Session Expired', 'Please login again.', [
         { text: 'Login', onPress: () => router.replace('/(pages)/login') },
-      ]);
+      ], { cancelable: false });
     });
     return () => { unsubscribe(); };
   }, [router]);

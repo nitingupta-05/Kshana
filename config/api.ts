@@ -1,7 +1,7 @@
 import { emitAuthRequired } from '@/utils/auth-events';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const DEFAULT_API_BASE_URL = 'https://kshana.onrender.com/api';
+const DEFAULT_API_BASE_URL = 'http://10.107.154.122:5001/api';
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? DEFAULT_API_BASE_URL;
 export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '');
@@ -269,4 +269,40 @@ export const getUnreadConversationCounts = async () => {
 
 export const markConversationRead = async (conversationId: string) => {
   return await apiCall(`${API_BASE_URL}/conversations/${conversationId}/read`, 'POST', undefined, true);
+};
+
+export const setDisappearTimer = async (conversationId: string, seconds: number) => {
+  return await apiCall(`${API_BASE_URL}/conversations/${conversationId}/disappear`, 'PATCH', { seconds }, true);
+};
+
+export const updateMood = async (mood: string) => {
+  return await apiCall(API_ENDPOINTS.UPDATE_PROFILE, 'PATCH', { mood }, true);
+};
+
+// ─── Reactions ────────────────────────────────────────────────────────────────
+
+export const reactToMessage = async (messageId: string, emoji: string) => {
+  return await apiCall(`${API_BASE_URL}/messages/${messageId}/react`, 'POST', { emoji }, true);
+};
+
+// ─── Stories ─────────────────────────────────────────────────────────────────
+
+export const listStories = async () => {
+  return await apiCall(`${API_BASE_URL}/stories`, 'GET', undefined, true);
+};
+
+export const postStory = async (payload: { text?: string; image?: string; bgColor?: string }) => {
+  return await apiCall(`${API_BASE_URL}/stories`, 'POST', payload, true);
+};
+
+export const viewStory = async (storyId: string) => {
+  return await apiCall(`${API_BASE_URL}/stories/${storyId}/view`, 'POST', undefined, true);
+};
+
+export const getStoryViewers = async (storyId: string) => {
+  return await apiCall(`${API_BASE_URL}/stories/${storyId}/viewers`, 'GET', undefined, true);
+};
+
+export const getActiveStoryAuthors = async () => {
+  return await apiCall(`${API_BASE_URL}/stories/active-authors`, 'GET', undefined, true);
 };

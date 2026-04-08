@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -18,6 +19,7 @@ import {
 import CustomInput from '@/components/CustomInput';
 import { FabMenu } from '@/components/FabMenu';
 import { API_ENDPOINTS, apiCall, removeToken } from '@/config/api';
+import { useRealtime } from '@/contexts/realtime';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { cacheGet, cacheSet } from '@/utils/cache';
 
@@ -26,27 +28,22 @@ type ProfileForm = {
   email: string;
   description: string;
   photo: string;
+  mood: string;
 };
 
 export default function ProfileScreen() {
   const colors = useThemeColor();
   const router = useRouter();
+  const { socket } = useRealtime();
 
-  const [form, setForm] = useState<ProfileForm>({
-    name: '',
-    email: '',
-    description: '',
-    photo: '',
-  });
-  const [snapshot, setSnapshot] = useState<ProfileForm>({
-    name: '',
-    email: '',
-    description: '',
-    photo: '',
-  });
+  const [form, setForm] = useState<ProfileForm>({ name: '', email: '', description: '', photo: '', mood: '' });
+  const [snapshot, setSnapshot] = useState<ProfileForm>({ name: '', email: '', description: '', photo: '', mood: '' });
   const [isEditing, setIsEditing] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [showMoodPicker, setShowMoodPicker] = useState(false);
+
+  const MOOD_PRESETS = ['', '🟢 Available', '🎯 Focused', '🎮 Gaming', '🎵 Listening', '📚 Studying', '🔕 Do not disturb', '😴 Sleeping', '🚗 Driving', '🏋️ Working out'];
 
   useEffect(() => {
     let isMounted = true;
@@ -62,6 +59,7 @@ export default function ProfileScreen() {
       const nextForm: ProfileForm = {
         name: data.name, email: data.email,
         description: data.description ?? '', photo: data.profileImage ?? '',
+        mood: data.mood ?? '',
       };
       setForm(nextForm); setSnapshot(nextForm);
       setIsLoading(false);
@@ -81,14 +79,21 @@ export default function ProfileScreen() {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'] as any,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.5,
+      quality: 0.3,
+      base64: true,
     });
 
-    if (!result.canceled) {
-      setForm({ ...form, photo: result.assets[0].uri });
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      // Use base64 directly from picker if available (avoids FileSystem entirely)
+      if (asset.base64) {
+        setForm({ ...form, photo: `data:image/jpeg;base64,${asset.base64}` });
+      } else {
+        setForm({ ...form, photo: asset.uri });
+      }
     }
   };
 
@@ -96,17 +101,31 @@ export default function ProfileScreen() {
     if (!form.name || !form.email) {
       return Alert.alert('Error', 'Name and Email are required.');
     }
-
     try {
       setIsUpdating(true);
+      let imageToSave = form.photo;
+      // If it's still a local file URI (base64 not available from picker), convert it
+      if (form.photo && form.photo.startsWith('file://')) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(form.photo, {
+            encoding: 'base64' as any,
+          });
+          if (base64) imageToSave = `data:image/jpeg;base64,${base64}`;
+        } catch {
+          // send URI as-is if FileSystem fails
+        }
+      }
       const payload = {
         name: form.name,
         description: form.description,
-        profileImage: form.photo,
+        profileImage: imageToSave,
       };
       await apiCall(API_ENDPOINTS.UPDATE_PROFILE, 'PATCH', payload, true);
-      setSnapshot(form);
+      const saved = { ...form, photo: imageToSave };
+      setForm(saved);
+      setSnapshot(saved);
       setIsEditing(false);
+      cacheSet('profile', saved);
       Alert.alert('Success', 'Profile updated successfully!');
     } catch (err: any) {
       Alert.alert('Update Failed', err.message);
@@ -118,6 +137,19 @@ export default function ProfileScreen() {
   const handleLogout = async () => {
     await removeToken();
     router.replace('/(pages)/login');
+  };
+
+  const updateMood = async (mood: string) => {
+    try {
+      // Update profile in backend
+      await apiCall(API_ENDPOINTS.UPDATE_PROFILE, 'PATCH', { mood }, true);
+      // Broadcast mood to other users via socket
+      if (socket?.connected) {
+        socket.emit('user:mood', { mood });
+      }
+    } catch (err: any) {
+      console.error('Failed to update mood:', err.message);
+    }
   };
 
   if (isLoading) {
@@ -162,6 +194,15 @@ export default function ProfileScreen() {
               <Text style={[styles.meta, { color: colors.subtext }]}>
                 {form.description || 'No description yet.'}
               </Text>
+              {form.mood ? (
+                <TouchableOpacity onPress={() => setShowMoodPicker(true)} style={[styles.moodBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <Text style={[styles.moodText, { color: colors.primary }]}>{form.mood}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity onPress={() => setShowMoodPicker(true)} style={[styles.moodBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <Text style={[styles.moodText, { color: colors.subtext }]}>+ Set mood</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <View style={styles.cardInputs}>
@@ -250,6 +291,28 @@ export default function ProfileScreen() {
         </Text>
       </View>
       <FabMenu />
+      {/* Mood picker */}
+      {showMoodPicker && (
+        <View style={[styles.moodOverlay, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
+          <View style={[styles.moodSheet, { backgroundColor: colors.background, borderColor: colors.border }]}>
+            <Text style={[styles.moodSheetTitle, { color: colors.text }]}>Set Mood</Text>
+            {MOOD_PRESETS.map((m) => (
+              <TouchableOpacity key={m || 'none'} style={[styles.moodOption, { borderBottomColor: colors.border }]} activeOpacity={0.8}
+                onPress={async () => {
+                  setForm((f) => ({ ...f, mood: m }));
+                  setShowMoodPicker(false);
+                  await updateMood(m).catch(() => {});
+                }}>
+                <Text style={[styles.moodOptionText, { color: form.mood === m ? colors.primary : colors.text }]}>{m || 'Clear mood'}</Text>
+                {form.mood === m && <Ionicons name="checkmark" size={18} color={colors.primary} />}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={styles.moodCancel} onPress={() => setShowMoodPicker(false)}>
+              <Text style={[styles.moodCancelText, { color: colors.subtext }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -337,4 +400,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerText: { fontFamily: 'KshanaFont', fontSize: 12 },
+  moodBadge: { borderWidth: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, marginTop: 6 },
+  moodText: { fontFamily: 'KshanaFont', fontSize: 13 },
+  moodOverlay: { position: 'absolute', inset: 0, justifyContent: 'flex-end' },
+  moodSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, paddingBottom: 32 },
+  moodSheetTitle: { fontFamily: 'KshanaFont', fontSize: 16, padding: 20, paddingBottom: 8 },
+  moodOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1 },
+  moodOptionText: { fontFamily: 'KshanaFont', fontSize: 15 },
+  moodCancel: { alignItems: 'center', padding: 16 },
+  moodCancelText: { fontFamily: 'KshanaFont', fontSize: 14 },
 });

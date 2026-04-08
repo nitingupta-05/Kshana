@@ -32,8 +32,8 @@ const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const onlineCounts = new Map(); // userId -> socket count
 
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Force Google DNS to bypass broken system DNS resolvers
 const dns = require("dns");
@@ -56,6 +56,7 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     description: { type: String, default: "" },
     profileImage: { type: String, default: "" },
+    mood: { type: String, default: "" }, // e.g. "🎯 Focused" or "🎮 Gaming"
   },
   { timestamps: true }
 );
@@ -80,6 +81,7 @@ const conversationSchema = new mongoose.Schema(
       ref: "Message",
       default: null,
     },
+    disappearAfter: { type: Number, default: 0 }, // seconds; 0 = off
   },
   { timestamps: true }
 );
@@ -100,6 +102,19 @@ const messageSchema = new mongoose.Schema(
     text: { type: String, default: "" },
     deliveredTo: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    reactions: [
+      {
+        emoji: { type: String, required: true },
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+        userName: { type: String, default: "" },
+      },
+    ],
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+    expiresAt: { type: Date, default: null, index: { expireAfterSeconds: 0 } },
   },
   { timestamps: true }
 );
@@ -129,7 +144,7 @@ const notificationSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     type: {
       type: String,
-      enum: ["request_received", "request_accepted", "message"],
+      enum: ["request_received", "request_accepted", "message", "broadcast"],
       required: true,
     },
     data: { type: Object, default: {} },
@@ -152,6 +167,21 @@ const pushTokenSchema = new mongoose.Schema(
 pushTokenSchema.index({ user: 1, token: 1 }, { unique: true });
 
 const PushToken = mongoose.model("PushToken", pushTokenSchema);
+
+// Story model — 24-hour disappearing posts
+const storySchema = new mongoose.Schema(
+  {
+    author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    text: { type: String, default: "" },
+    image: { type: String, default: "" },
+    bgColor: { type: String, default: "#7c3aed" },
+    expiresAt: { type: Date, required: true, index: { expireAfterSeconds: 0 } },
+    viewedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  },
+  { timestamps: true }
+);
+
+const Story = mongoose.model("Story", storySchema);
 
 // ================= AUTH MIDDLEWARE =================
 
@@ -178,6 +208,7 @@ const toPublicUser = (u) => {
     email: u.email,
     description: u.description ?? "",
     profileImage: u.profileImage ?? "",
+    mood: u.mood ?? "",
   };
 };
 
@@ -216,6 +247,7 @@ const toPublicConversation = (c) => {
       : null,
     updatedAt: c.updatedAt,
     createdAt: c.createdAt,
+    disappearAfter: c.disappearAfter ?? 0,
   };
 };
 
@@ -230,6 +262,18 @@ const toPublicMessage = (m) => {
     createdAt: m.createdAt,
     deliveredTo: (m.deliveredTo || []).map((id) => id.toString()),
     readBy: (m.readBy || []).map((id) => id.toString()),
+    reactions: (m.reactions || []).map((r) => ({
+      emoji: r.emoji,
+      userId: r.userId.toString(),
+      userName: r.userName || "",
+    })),
+    replyTo: m.replyTo
+      ? {
+          id: m.replyTo._id ? m.replyTo._id.toString() : m.replyTo.toString(),
+          text: m.replyTo.text || "",
+          senderName: m.replyTo.sender?.name || "",
+        }
+      : null,
   };
 };
 
@@ -252,6 +296,20 @@ const toPublicNotification = (n) => {
     data: n.data ?? {},
     readAt: n.readAt,
     createdAt: n.createdAt,
+  };
+};
+
+const toPublicStory = (s) => {
+  if (!s) return null;
+  return {
+    id: s._id,
+    author: toPublicUser(s.author),
+    text: s.text || "",
+    image: s.image || "",
+    bgColor: s.bgColor || "#7c3aed",
+    createdAt: s.createdAt,
+    expiresAt: s.expiresAt,
+    viewedBy: (s.viewedBy || []).map((id) => id.toString()),
   };
 };
 
@@ -287,6 +345,11 @@ app.get("/", (_, res) => {
 
 app.get("/healthz", (_, res) => {
   res.json({ ok: true });
+});
+
+// Keep-alive ping — called by UptimeRobot every 5 min to prevent cold starts
+app.get("/ping", (_, res) => {
+  res.json({ ok: true, ts: Date.now() });
 });
 
 // --- Auth
@@ -373,6 +436,7 @@ app.get("/api/user/profile", verifyToken, async (req, res) => {
       email: user.email,
       description: user.description,
       profileImage: user.profileImage,
+      mood: user.mood ?? "",
     });
   } catch (err) {
     console.error("Profile error:", err);
@@ -382,13 +446,18 @@ app.get("/api/user/profile", verifyToken, async (req, res) => {
 
 app.patch("/api/user/update", verifyToken, async (req, res) => {
   try {
-    const { name, description, profileImage } = req.body;
+    const { name, description, profileImage, mood } = req.body;
 
     const updatedUser = await User.findByIdAndUpdate(
       req.userId,
-      { name, description, profileImage },
+      { name, description, profileImage, ...(mood !== undefined && { mood }) },
       { new: true }
     ).select("-password");
+
+    // Broadcast mood change to all connected sockets
+    if (mood !== undefined) {
+      io.emit("user:mood", { userId: String(req.userId), mood: mood ?? "" });
+    }
 
     res.json({ msg: "Profile updated", user: updatedUser });
   } catch (err) {
@@ -586,7 +655,7 @@ app.post("/api/requests/:id/reject", verifyToken, async (req, res) => {
 
 // Notifications
 app.get("/api/notifications/unread-count", verifyToken, async (req, res) => {
-  const count = await Notification.countDocuments({ user: req.userId, readAt: null, type: { $ne: "message" } });
+  const count = await Notification.countDocuments({ user: req.userId, readAt: null, type: { $in: ["request_received", "request_accepted", "broadcast"] } });
   res.json({ count });
 });
 
@@ -594,7 +663,7 @@ app.get("/api/notifications", verifyToken, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit || "50", 10) || 50, 200));
     const unreadOnly = String(req.query.unread || "") === "1";
-    const filter = { user: req.userId, type: { $ne: "message" } };
+    const filter = { user: req.userId, type: { $in: ["request_received", "request_accepted", "broadcast"] } };
     if (unreadOnly) filter.readAt = null;
 
     const notifications = await Notification.find(filter).sort({ createdAt: -1 }).limit(limit);
@@ -694,6 +763,26 @@ app.post("/api/conversations/:id/read", verifyToken, async (req, res) => {
   }
 });
 
+// Set disappearing messages timer for a conversation
+app.patch("/api/conversations/:id/disappear", verifyToken, async (req, res) => {
+  try {
+    const conversation = await ensureConversationAccess(req.params.id, req.userId);
+    if (!conversation) return res.status(404).json({ msg: "Conversation not found" });
+    const seconds = Number(req.body.seconds) || 0;
+    conversation.disappearAfter = seconds;
+    await conversation.save();
+    // Notify all participants
+    io.to(`conversation:${conversation._id}`).emit("conversation:disappear", {
+      conversationId: String(conversation._id),
+      disappearAfter: seconds,
+    });
+    res.json({ ok: true, disappearAfter: seconds });
+  } catch (err) {
+    console.error("Disappear error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
 // Push token registration
 app.post("/api/push/register", verifyToken, async (req, res) => {
   try {
@@ -710,6 +799,166 @@ app.post("/api/push/register", verifyToken, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error("Push register error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// ─── Reactions ────────────────────────────────────────────────────────────────
+
+app.post("/api/messages/:id/react", verifyToken, async (req, res) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji) return res.status(400).json({ msg: "emoji required" });
+
+    const msg = await Message.findById(req.params.id).populate("conversation");
+    if (!msg) return res.status(404).json({ msg: "Message not found" });
+
+    // Verify user is a participant
+    const conv = await ensureConversationAccess(msg.conversation._id, req.userId);
+    if (!conv) return res.status(403).json({ msg: "Not allowed" });
+
+    const me = await User.findById(req.userId).select("name");
+
+    // Toggle: remove if same emoji already exists from this user, else upsert
+    const existing = msg.reactions.find(
+      (r) => r.userId.toString() === req.userId.toString() && r.emoji === emoji
+    );
+    if (existing) {
+      msg.reactions = msg.reactions.filter(
+        (r) => !(r.userId.toString() === req.userId.toString() && r.emoji === emoji)
+      );
+    } else {
+      // Remove any other emoji from this user first (one reaction per user)
+      msg.reactions = msg.reactions.filter(
+        (r) => r.userId.toString() !== req.userId.toString()
+      );
+      msg.reactions.push({ emoji, userId: req.userId, userName: me?.name || "" });
+    }
+    await msg.save();
+
+    const reactions = msg.reactions.map((r) => ({
+      emoji: r.emoji,
+      userId: r.userId.toString(),
+      userName: r.userName,
+    }));
+
+    io.to(`conversation:${msg.conversation._id}`).emit("message:reaction", {
+      messageId: msg._id.toString(),
+      conversationId: msg.conversation._id.toString(),
+      reactions,
+    });
+
+    res.json({ reactions });
+  } catch (err) {
+    console.error("React error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// ─── Stories ─────────────────────────────────────────────────────────────────
+
+// Get active stories from contacts
+app.get("/api/stories", verifyToken, async (req, res) => {
+  try {
+    const now = new Date();
+    // Get accepted contacts
+    const accepted = await Request.find({
+      $or: [{ from: req.userId, status: "accepted" }, { to: req.userId, status: "accepted" }],
+    }).select("from to");
+    const contactIds = accepted.map((r) =>
+      r.from.toString() === req.userId.toString() ? r.to : r.from
+    );
+    contactIds.push(req.userId); // include own stories
+
+    const stories = await Story.find({
+      author: { $in: contactIds },
+      expiresAt: { $gt: now },
+    })
+      .sort({ createdAt: -1 })
+      .populate("author", "name email profileImage");
+
+    res.json({ stories: stories.map(toPublicStory) });
+  } catch (err) {
+    console.error("Get stories error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Post a new story
+app.post("/api/stories", verifyToken, async (req, res) => {
+  try {
+    const { text, image, bgColor } = req.body;
+    if (!text && !image) return res.status(400).json({ msg: "text or image required" });
+
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const story = await Story.create({
+      author: req.userId,
+      text: text || "",
+      image: image || "",
+      bgColor: bgColor || "#7c3aed",
+      expiresAt,
+    });
+
+    const populated = await Story.findById(story._id).populate("author", "name email profileImage");
+    const pub = toPublicStory(populated);
+
+    // Notify contacts via socket
+    io.emit("story:new", { story: pub });
+
+    res.status(201).json({ story: pub });
+  } catch (err) {
+    console.error("Post story error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Mark story as viewed
+app.post("/api/stories/:id/view", verifyToken, async (req, res) => {
+  try {
+    await Story.findByIdAndUpdate(req.params.id, {
+      $addToSet: { viewedBy: req.userId },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Get viewers of a story (only author can see full list)
+app.get("/api/stories/:id/viewers", verifyToken, async (req, res) => {
+  try {
+    const story = await Story.findById(req.params.id).populate("viewedBy", "name email profileImage");
+    if (!story) return res.status(404).json({ msg: "Story not found" });
+    if (story.author.toString() !== req.userId.toString()) {
+      return res.status(403).json({ msg: "Not allowed" });
+    }
+    res.json({
+      count: story.viewedBy.length,
+      viewers: story.viewedBy.map(toPublicUser),
+    });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Get IDs of users who have active stories (for story rings)
+app.get("/api/stories/active-authors", verifyToken, async (req, res) => {
+  try {
+    const now = new Date();
+    const accepted = await Request.find({
+      $or: [{ from: req.userId, status: "accepted" }, { to: req.userId, status: "accepted" }],
+    }).select("from to");
+    const contactIds = accepted.map((r) =>
+      r.from.toString() === req.userId.toString() ? r.to : r.from
+    );
+    contactIds.push(req.userId);
+
+    const authors = await Story.distinct("author", {
+      author: { $in: contactIds },
+      expiresAt: { $gt: now },
+    });
+    res.json({ authorIds: authors.map((id) => id.toString()) });
+  } catch (err) {
     res.status(500).json({ msg: "Server error" });
   }
 });
@@ -811,7 +1060,8 @@ app.get("/api/conversations/:id/messages", verifyToken, async (req, res) => {
     const messages = await Message.find({ conversation: conversation._id })
       .sort({ createdAt: -1 })
       .limit(limit)
-      .populate("sender", "name email profileImage");
+      .populate("sender", "name email profileImage")
+      .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
     messages.reverse();
 
@@ -832,6 +1082,8 @@ app.post("/api/conversations/:id/messages", verifyToken, async (req, res) => {
     const text = (req.body.text || "").toString();
     if (!text.trim()) return res.status(400).json({ msg: "Message text is required" });
 
+    const replyToId = req.body.replyTo || null;
+
     const recipients = conversation.participants
       .map((p) => p.toString())
       .filter((id) => id !== req.userId.toString());
@@ -847,15 +1099,18 @@ app.post("/api/conversations/:id/messages", verifyToken, async (req, res) => {
       text: text.trim(),
       deliveredTo,
       readBy: [req.userId],
+      replyTo: replyToId && mongoose.Types.ObjectId.isValid(replyToId) ? replyToId : null,
+      expiresAt: conversation.disappearAfter > 0
+        ? new Date(Date.now() + conversation.disappearAfter * 1000)
+        : null,
     });
 
     conversation.lastMessage = msg._id;
     await conversation.save();
 
-    const populated = await Message.findById(msg._id).populate(
-      "sender",
-      "name email profileImage"
-    );
+    const populated = await Message.findById(msg._id)
+      .populate("sender", "name email profileImage")
+      .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
     const wireMessage = toPublicMessage(populated);
 
@@ -960,6 +1215,8 @@ io.on("connection", (socket) => {
       const text = (payload?.text || "").toString();
       if (!text.trim()) return cb?.({ ok: false, error: "Message text is required" });
 
+      const replyToId = payload?.replyTo || null;
+
       const conversation = await ensureConversationAccess(conversationId, socket.userId);
       if (!conversation) return cb?.({ ok: false, error: "Conversation not found" });
 
@@ -978,26 +1235,34 @@ io.on("connection", (socket) => {
         text: text.trim(),
         deliveredTo,
         readBy: [socket.userId],
+        replyTo: replyToId && mongoose.Types.ObjectId.isValid(replyToId) ? replyToId : null,
+        expiresAt: conversation.disappearAfter > 0
+          ? new Date(Date.now() + conversation.disappearAfter * 1000)
+          : null,
       });
 
       conversation.lastMessage = msg._id;
       await conversation.save();
 
-      const populated = await Message.findById(msg._id).populate(
-        "sender",
-        "name email profileImage"
-      );
+      const populated = await Message.findById(msg._id)
+        .populate("sender", "name email profileImage")
+        .populate({ path: "replyTo", select: "text sender", populate: { path: "sender", select: "name" } });
 
       const wireMessage = toPublicMessage(populated);
 
       io.to(`conversation:${conversation._id}`).emit("message:new", {
         message: wireMessage,
       });
-      io.to(`conversation:${conversation._id}`).emit("message:status", {
-        conversationId: String(conversation._id),
-        userId: String(socket.userId),
-        status: "sent",
-      });
+      // Only emit delivered status to recipients who are online — not "sent" to whole room
+      for (const recipientId of recipients) {
+        if ((onlineCounts.get(recipientId) || 0) > 0) {
+          io.to(`user:${recipientId}`).emit("message:status", {
+            conversationId: String(conversation._id),
+            userId: String(recipientId),
+            status: "delivered",
+          });
+        }
+      }
 
       const senderUser = await User.findById(socket.userId).select(
         "name email description profileImage"
@@ -1077,20 +1342,121 @@ io.on("connection", (socket) => {
   });
 });
 
+// ================= ADMIN ROUTES =================
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "kshana_admin_2024";
+
+const verifyAdmin = (req, res, next) => {
+  const secret = req.headers["x-admin-secret"];
+  if (secret !== ADMIN_SECRET) return res.status(401).json({ msg: "Unauthorized" });
+  next();
+};
+
+// Admin login
+app.post("/admin/login", (req, res) => {
+  const { secret } = req.body;
+  if (secret !== ADMIN_SECRET) return res.status(401).json({ msg: "Invalid secret" });
+  res.json({ ok: true, token: ADMIN_SECRET });
+});
+
+// Get all users
+app.get("/admin/users", verifyAdmin, async (req, res) => {
+  try {
+    const users = await User.find().select("name email password description profileImage createdAt").sort({ createdAt: -1 });
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Get stats
+app.get("/admin/stats", verifyAdmin, async (req, res) => {
+  try {
+    const [totalUsers, totalMessages, totalConversations] = await Promise.all([
+      User.countDocuments(),
+      Message.countDocuments(),
+      Conversation.countDocuments(),
+    ]);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const newToday = await User.countDocuments({ createdAt: { $gte: today } });
+    res.json({ totalUsers, totalMessages, totalConversations, newToday });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Send broadcast notification to all users
+app.post("/admin/broadcast", verifyAdmin, async (req, res) => {
+  try {
+    const { title, message } = req.body;
+    if (!title || !message) return res.status(400).json({ msg: "title and message required" });
+
+    const users = await User.find().select("_id");
+    const notifDocs = users.map((u) => ({
+      user: u._id,
+      type: "broadcast",
+      data: { title, message, by: { name: "Kshana Team" } },
+    }));
+    const inserted = await Notification.insertMany(notifDocs, { ordered: false });
+
+    // Emit notify:new to each user's room so bell updates and notification page reloads
+    for (let i = 0; i < users.length; i++) {
+      const userId = users[i]._id.toString();
+      const notif = inserted[i];
+      if (!notif) continue;
+      io.to(`user:${userId}`).emit("notify:new", {
+        notification: {
+          id: notif._id,
+          type: "broadcast",
+          data: { title, message, by: { name: "Kshana Team" } },
+          readAt: null,
+          createdAt: notif.createdAt,
+        },
+        unreadCount: 1,
+      });
+    }
+    // Also emit global broadcast event
+    io.emit("notify:broadcast", { title, message });
+    console.log(`Broadcast sent: "${title}" to ${users.length} users`);
+
+    res.json({ ok: true, sent: users.length });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+// Delete user
+app.delete("/admin/users/:id", verifyAdmin, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://0.0.0.0:${PORT}`);
 
-  // Keep-alive ping — prevents Render free tier cold starts
-  // Pings /healthz every 10 minutes so the server never sleeps
-  if (process.env.RENDER_EXTERNAL_URL) {
-    const url = `${process.env.RENDER_EXTERNAL_URL}/healthz`;
+  // ── Self-ping to prevent Render free tier cold starts ──────────────────
+  // Render sets RENDER_EXTERNAL_HOSTNAME automatically on every deploy.
+  // We ping our own /ping endpoint every 4 minutes so the dyno never idles.
+  const renderHost =
+    process.env.RENDER_EXTERNAL_HOSTNAME ||   // set by Render automatically
+    process.env.RENDER_EXTERNAL_URL?.replace(/^https?:\/\//, '');
+
+  if (renderHost) {
+    const pingUrl = `https://${renderHost}/ping`;
+    console.log(`Self-ping enabled → ${pingUrl} every 4 min`);
     setInterval(async () => {
       try {
-        await fetch(url);
-        console.log("Keep-alive ping sent");
+        const res = await fetch(pingUrl);
+        console.log(`[keep-alive] ${new Date().toISOString()} → ${res.status}`);
       } catch (e) {
-        console.error("Keep-alive ping failed:", e.message);
+        console.warn(`[keep-alive] ping failed: ${e.message}`);
       }
-    }, 10 * 60 * 1000); // every 10 minutes
+    }, 4 * 60 * 1000); // every 4 minutes
+  } else {
+    console.log("Self-ping skipped (not running on Render)");
   }
 });
